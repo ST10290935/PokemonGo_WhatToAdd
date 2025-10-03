@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.drawable.BitmapDrawable
 import android.hardware.Sensor
@@ -11,7 +12,9 @@ import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import android.os.Bundle
+import android.util.Log
 import android.widget.Button
+import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.TextView
 import android.widget.Toast
@@ -21,16 +24,17 @@ import androidx.core.app.ActivityCompat
 import androidx.lifecycle.lifecycleScope
 import com.example.pokemon.data.AppDatabase
 import com.example.pokemon.data.Creature
-import com.google.firebase.auth.FirebaseAuth // 🔹 Firebase
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.auth.FirebaseUser
+import com.google.firebase.auth.GoogleAuthProvider
 import org.osmdroid.config.Configuration
 import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.MapView
 import org.osmdroid.views.overlay.Marker
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.osmdroid.views.overlay.Polygon
-import kotlin.math.sqrt
 import kotlin.random.Random
 
 class MainActivity : AppCompatActivity(), SensorEventListener {
@@ -39,41 +43,180 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     private lateinit var db: AppDatabase
     private lateinit var sensorManager: SensorManager
     private var stepCounterSensor: Sensor? = null
-    private var accelerometer: Sensor? = null
+    private var steps = 0
+    private lateinit var playerMarker: Marker
     private lateinit var prefs: SharedPreferences
     private lateinit var listener: SharedPreferences.OnSharedPreferenceChangeListener
+    private var playerName: String = "You"
     private lateinit var txtSteps: TextView
     private lateinit var btnViewCaptured: Button
-    private lateinit var playerMarker: Marker
+    private var initialStepCount: Int? = null
+    private var lastAcceleration = 0f
+    private var acceleration = 0f
+    private var lastStepTime = 0L
+    //pokeball code
+    private lateinit var btnPokeball: ImageButton
+    private val activeCreatures = mutableListOf<Marker>() // keep track of live creatures
+
+    //pokedex
     private lateinit var compassView: ImageView
     private var lastPosition: GeoPoint? = null
-    private var steps = 0
-    private var isLoggedOut = false // 🔹 Flag for logout cleanup
 
-    private lateinit var auth: FirebaseAuth // 🔹 Firebase instance
-
-    // Your full original creature list
     private val creatures = listOf(
-        R.drawable.creature1, R.drawable.creature2, R.drawable.creature3, R.drawable.creature4,
-        R.drawable.creature5, R.drawable.creature6, R.drawable.creature7, R.drawable.creature8,
-        R.drawable.creature9, R.drawable.creature10, R.drawable.creature11, R.drawable.creature12,
-        R.drawable.creature13, R.drawable.creature14, R.drawable.creature15, R.drawable.creature16
+        R.drawable.creature1,
+        R.drawable.creature2,
+        R.drawable.creature3,
+        R.drawable.creature4,
+        R.drawable.creature5,
+        R.drawable.creature6,
+        R.drawable.creature7,
+        R.drawable.creature8,
+        R.drawable.creature9,
+        R.drawable.creature10,
+        R.drawable.creature11,
+        R.drawable.creature12,
+        R.drawable.creature13,
+        R.drawable.creature14,
+        R.drawable.creature15,
+        R.drawable.creature16
     )
-    private val creatureNames = listOf(
-        "Fluffy", "Sparky", "Leafy", "Rocky", "Bubble", "Frosty",
-        "Shadow", "Blaze", "Glimmer", "Spike", "Twinkle", "Stormy",
-        "Sunny", "Viper", "Aurora", "Mystic"
-    )
+    private val creatureNames = listOf("Fluffy", "Sparky", "Leafy", "Aqua",
+        "Rocko",
+        "Shadow",
+        "Frosty",
+        "Blaze",
+        "Stormy",
+        "Petal",
+        "Bubble",
+        "Boulder",
+        "Nightfang",
+        "Glacier",
+        "Inferno",
+        "Volt")
+
+    // Firebase auth
+    private lateinit var auth: FirebaseAuth
+    private var currentUser: FirebaseUser? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // Initialize Firebase Auth
+        auth = FirebaseAuth.getInstance()
+        currentUser = auth.currentUser
+
+        // If not logged in, redirect to LoginActivity
+        if (currentUser == null) {
+            startActivity(Intent(this, LoginActivity::class.java))
+            finish()
+            return
+        }
+
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+            if (ActivityCompat.checkSelfPermission(
+                    this, Manifest.permission.ACTIVITY_RECOGNITION
+                ) == PackageManager.PERMISSION_GRANTED
+            ) {
+                stepCounterSensor?.also { sensor ->
+                    sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_UI)
+                }
+            } else {
+                Toast.makeText(this, "Step counter permission not granted", Toast.LENGTH_SHORT).show()
+            }
+            if (stepCounterSensor == null) {
+                Toast.makeText(this, "No step counter sensor available on this device", Toast.LENGTH_LONG).show()
+            }
+        }
+
         Configuration.getInstance().load(applicationContext, getSharedPreferences("prefs", MODE_PRIVATE))
         setContentView(R.layout.activity_main)
+        
+        //pokedex code
+        val btnEncyclopedia = findViewById<Button>(R.id.btnEncyclopedia)
+        btnEncyclopedia.setOnClickListener {
+            startActivity(Intent(this, EncyclopediaActivity::class.java))
+        }
+
+        //pokeball code
+        btnPokeball = findViewById(R.id.btnPokeball)
+        btnPokeball.setOnClickListener {
+            if (activeCreatures.isEmpty()) {
+                Toast.makeText(this, "No creatures nearby!", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+
+            // Find closest creature to player
+            val closest = activeCreatures.minByOrNull {
+                playerMarker.position.distanceToAsDouble(it.position)
+            }
+
+            if (closest != null && playerMarker.position.distanceToAsDouble(closest.position) < 60) {
+                // within 60 meters
+                val creatureName = closest.title?.removePrefix("A wild ")?.removeSuffix(" appeared!") ?: "Unknown"
+                val spriteRes = creatures.getOrNull(creatureNames.indexOf(creatureName)) ?: R.drawable.default_creature
+                captureCreature(creatureName, spriteRes)
+                mapView.overlays.remove(closest)
+                activeCreatures.remove(closest)
+                mapView.invalidate()
+            } else {
+                Toast.makeText(this, "No creatures in range!", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+//        sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
+//
+//// Try hardware step counter first
+//        stepCounterSensor = sensorManager.getDefaultSensor(Sensor.TYPE_STEP_COUNTER)
+//
+//        if (stepCounterSensor == null) {
+//            // Fallback: use accelerometer for step detection
+//            stepCounterSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+//            Toast.makeText(this, "Using accelerometer-based step detection", Toast.LENGTH_LONG).show()
+//        }
 
         prefs = androidx.preference.PreferenceManager.getDefaultSharedPreferences(this)
+        playerName = prefs.getString("pref_avatar_name", "You") ?: "You"
+        listener = SharedPreferences.OnSharedPreferenceChangeListener { sharedPrefs, key ->
+            when (key) {
+                "pref_avatar_name" -> {
+                    playerName = sharedPrefs.getString(key, "You") ?: "You"
+                    playerMarker.title = playerName
+                    mapView.invalidate()
+                }
+                "pref_avatar_size" -> {
+                    val sizePref = sharedPrefs.getString(key, "medium")
+                    val avatarSize = when (sizePref) {
+                        "small" -> 128
+                        "medium" -> 200
+                        "large" -> 300
+                        else -> 200
+                    }
+                    val originalBitmap = BitmapFactory.decodeResource(resources, R.drawable.player_avatar)
+                    val scaledBitmap = Bitmap.createScaledBitmap(originalBitmap, avatarSize, avatarSize, true)
+                    originalBitmap.recycle()
+                    val playerIcon = BitmapDrawable(resources, scaledBitmap)
+                    playerMarker.icon = playerIcon
+                    mapView.invalidate()
+                }
+                "pref_map_rotation" -> {
+                    val rotationEnabled = sharedPrefs.getBoolean(key, true)
+                    if (rotationEnabled) {
+                        mapView.setMapOrientation(-45f, false)
+                    } else {
+                        mapView.setMapOrientation(0f, false)
+                    }
+                }
+                "pref_map_theme" -> {
+                    when (sharedPrefs.getString(key, "default")) {
+                        "default" -> mapView.setTileSource(org.osmdroid.tileprovider.tilesource.TileSourceFactory.MAPNIK)
+                        "satellite" -> mapView.setTileSource(org.osmdroid.tileprovider.tilesource.TileSourceFactory.USGS_SAT)
+                        "dark" -> mapView.setTileSource(org.osmdroid.tileprovider.tilesource.TileSourceFactory.OpenTopo)
+                    }
+                }
+            }
+        }
+
         db = AppDatabase.getDatabase(this)
-        auth = FirebaseAuth.getInstance() // 🔹 Firebase init
 
         mapView = findViewById(R.id.mapView)
         mapView.setMultiTouchControls(true)
@@ -88,19 +231,21 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         mapController.setZoom(18.0)
         mapController.setCenter(playerPosition)
 
-        // Apply map theme from preferences
         when (prefs.getString("pref_map_theme", "default")) {
             "default" -> mapView.setTileSource(org.osmdroid.tileprovider.tilesource.TileSourceFactory.MAPNIK)
             "satellite" -> mapView.setTileSource(org.osmdroid.tileprovider.tilesource.TileSourceFactory.USGS_SAT)
             "dark" -> mapView.setTileSource(org.osmdroid.tileprovider.tilesource.TileSourceFactory.OpenTopo)
         }
 
-        // Map rotation
         val rotationEnabled = prefs.getBoolean("pref_map_rotation", true)
-        mapView.setMapOrientation(if (rotationEnabled) -45f else 0f, false)
+        if (rotationEnabled) {
+            mapView.setMapOrientation(-45f, false)
+        } else {
+            mapView.setMapOrientation(0f, false)
+        }
 
-        // Player marker
-        val avatarName = prefs.getString("pref_avatar_name", "You") ?: "You"
+        mapController.animateTo(playerPosition, 19.0, 2000L)
+
         val sizePref = prefs.getString("pref_avatar_size", "medium")
         val avatarSize = when (sizePref) {
             "small" -> 128
@@ -108,10 +253,13 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             "large" -> 300
             else -> 200
         }
+
         val originalBitmap = BitmapFactory.decodeResource(resources, R.drawable.player_avatar)
-        val scaledBitmap = android.graphics.Bitmap.createScaledBitmap(originalBitmap, avatarSize, avatarSize, true)
+        val scaledBitmap = Bitmap.createScaledBitmap(originalBitmap, avatarSize, avatarSize, true)
         originalBitmap.recycle()
         val playerIcon = BitmapDrawable(resources, scaledBitmap)
+
+        val avatarName = prefs.getString("pref_avatar_name", "You") ?: "You"
 
         playerMarker = Marker(mapView).apply {
             position = playerPosition
@@ -120,9 +268,28 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             icon = playerIcon
         }
         mapView.overlays.add(playerMarker)
+
+        compassView = findViewById(R.id.compassView)
         lastPosition = playerMarker.position
 
-        // Circle overlay
+        playerName = prefs.getString("pref_avatar_name", "You") ?: "You"
+
+        val nameOverlay = object : org.osmdroid.views.overlay.Overlay() {
+            override fun draw(canvas: android.graphics.Canvas, mapView: MapView, shadow: Boolean) {
+                if (shadow) return
+                val paint = android.graphics.Paint().apply {
+                    color = android.graphics.Color.BLACK
+                    textSize = 40f
+                    isAntiAlias = true
+                    textAlign = android.graphics.Paint.Align.CENTER
+                }
+                val screenPoint = mapView.projection.toPixels(playerMarker.position, null)
+                canvas.drawText(playerName, screenPoint.x.toFloat(), screenPoint.y - 50f, paint)
+            }
+        }
+
+        mapView.overlays.add(nameOverlay)
+
         val playerRadius = Polygon(mapView).apply {
             points = Polygon.pointsAsCircle(playerMarker.position, 50.0)
             outlinePaint.color = android.graphics.Color.parseColor("#448AFF")
@@ -131,61 +298,83 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         }
         mapView.overlays.add(playerRadius)
 
-        // Compass & step text
-        compassView = findViewById(R.id.compassView)
+        mapView.addMapListener(object : org.osmdroid.events.MapListener {
+            override fun onScroll(event: org.osmdroid.events.ScrollEvent?) = true
+            override fun onZoom(event: org.osmdroid.events.ZoomEvent?) = true
+        })
+
+        mapView.setOnTouchListener { _, event ->
+            if (event.action == android.view.MotionEvent.ACTION_UP) {
+                val geoPoint = mapView.projection.fromPixels(event.x.toInt(), event.y.toInt()) as GeoPoint
+                playerMarker.position = geoPoint
+                playerRadius.points = Polygon.pointsAsCircle(geoPoint, 25.0)
+                steps++
+                txtSteps.text = "Steps: $steps"
+                lastPosition?.let { last ->
+                    val dx = geoPoint.longitude - last.longitude
+                    val dy = geoPoint.latitude - last.latitude
+                    val angle = Math.toDegrees(Math.atan2(dy, dx)).toFloat()
+                    compassView.rotation = angle
+                }
+                lastPosition = geoPoint
+                mapView.invalidate()
+            }
+            false
+        }
+
         txtSteps = findViewById(R.id.txtSteps)
         btnViewCaptured = findViewById(R.id.btnViewCaptured)
 
-        btnViewCaptured.setOnClickListener { showCapturedCreatures() }
-
-        // Settings button
-        findViewById<Button>(R.id.btnSettings).setOnClickListener {
+        val btnSettings = findViewById<Button>(R.id.btnSettings)
+        btnSettings.setOnClickListener {
             startActivity(Intent(this, SettingsActivity::class.java))
         }
 
-        // Encyclopedia button (your original code)
-        findViewById<Button>(R.id.btnEncyclopedia).setOnClickListener {
-            startActivity(Intent(this, EncyclopediaActivity::class.java))
-        }
-
-        // Pokéball button (your original code)
-        findViewById<Button>(R.id.btnPokeball).setOnClickListener {
-            // Pokéball throw & capture logic stays unchanged
-        }
-
-        // 🔹 Firebase Logout button
-        findViewById<Button>(R.id.btnLogout).setOnClickListener {
-            cleanupOnLogout() // safely cleanup map + sensors
-            auth.signOut()
-            startActivity(Intent(this, LoginActivity::class.java))
-            finish()
-        }
-
-        // Step counter
         sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
         stepCounterSensor = sensorManager.getDefaultSensor(Sensor.TYPE_STEP_COUNTER)
-        accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER) // fallback
 
-        // Spawn initial creatures
+        btnViewCaptured.setOnClickListener { showCapturedCreatures() }
+
         mapView.postDelayed({ spawnRandomCreature() }, 5000)
-
-        // Preference listener
-        listener = SharedPreferences.OnSharedPreferenceChangeListener { sharedPrefs, key ->
-            if (key == "pref_avatar_name") {
-                playerMarker.title = sharedPrefs.getString(key, "You") ?: "You"
-                mapView.invalidate()
-            }
-        }
-        prefs.registerOnSharedPreferenceChangeListener(listener)
     }
 
     override fun onResume() {
         super.onResume()
         stepCounterSensor?.also { sensor ->
             sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_UI)
-        } ?: accelerometer?.also { sensor ->
-            sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_UI)
         }
+
+        playerName = prefs.getString("pref_avatar_name", "You") ?: "You"
+        playerMarker.title = playerName
+
+        val sizePref = prefs.getString("pref_avatar_size", "medium")
+        val avatarSize = when (sizePref) {
+            "small" -> 128
+            "medium" -> 200
+            "large" -> 300
+            else -> 200
+        }
+
+        val originalBitmap = BitmapFactory.decodeResource(resources, R.drawable.player_avatar)
+        val scaledBitmap = Bitmap.createScaledBitmap(originalBitmap, avatarSize, avatarSize, true)
+        originalBitmap.recycle()
+        val playerIcon = BitmapDrawable(resources, scaledBitmap)
+        playerMarker.icon = playerIcon
+
+        val rotationEnabled = prefs.getBoolean("pref_map_rotation", true)
+        if (rotationEnabled) {
+            mapView.setMapOrientation(-45f, false)
+        } else {
+            mapView.setMapOrientation(0f, false)
+        }
+
+        when (prefs.getString("pref_map_theme", "default")) {
+            "default" -> mapView.setTileSource(org.osmdroid.tileprovider.tilesource.TileSourceFactory.MAPNIK)
+            "satellite" -> mapView.setTileSource(org.osmdroid.tileprovider.tilesource.TileSourceFactory.USGS_SAT)
+            "dark" -> mapView.setTileSource(org.osmdroid.tileprovider.tilesource.TileSourceFactory.OpenTopo)
+        }
+
+        mapView.invalidate()
     }
 
     override fun onPause() {
@@ -194,23 +383,41 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         sensorManager.unregisterListener(this)
     }
 
-    override fun onSensorChanged(event: SensorEvent?) {
-        event ?: return
-        when (event.sensor.type) {
-            Sensor.TYPE_STEP_COUNTER -> {
-                val totalSteps = event.values[0].toInt()
-                txtSteps.text = "Steps: $totalSteps"
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == 101) {
+            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                Toast.makeText(this, "Permission granted for step counter", Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(this, "Permission denied. Step counter won't work.", Toast.LENGTH_SHORT).show()
             }
-            Sensor.TYPE_ACCELEROMETER -> {
-                // fallback step detection
-                val x = event.values[0]
-                val y = event.values[1]
-                val z = event.values[2]
-                val magnitude = sqrt((x * x + y * y + z * z).toDouble())
-                if (magnitude > 12) {
-                    steps++
-                    txtSteps.text = "Steps: $steps"
-                }
+        }
+    }
+
+    override fun onSensorChanged(event: SensorEvent?) {
+        if (event == null) return
+        if (event.sensor.type == Sensor.TYPE_STEP_COUNTER) {
+            val totalSteps = event.values[0].toInt()
+            if (initialStepCount == null) initialStepCount = totalSteps
+            val stepsSinceStart = totalSteps - (initialStepCount ?: totalSteps)
+            txtSteps.text = "Steps: $stepsSinceStart"
+        }
+        if (event.sensor.type == Sensor.TYPE_ACCELEROMETER) {
+            val x = event.values[0]
+            val y = event.values[1]
+            val z = event.values[2]
+            val g = Math.sqrt((x*x + y*y + z*z).toDouble()).toFloat()
+            acceleration = g - lastAcceleration
+            lastAcceleration = g
+            val now = System.currentTimeMillis()
+            if (acceleration > 1.2 && now - lastStepTime > 300) {
+                steps++
+                lastStepTime = now
+                txtSteps.text = "Steps: $steps"
             }
         }
     }
@@ -218,22 +425,33 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
 
     private fun spawnRandomCreature() {
-        if (isLoggedOut) return // 🔹 prevent crash after logout
+        if (!::playerMarker.isInitialized) {
+            mapView.postDelayed({ spawnRandomCreature() }, 10000)
+            return
+        }
 
         val index = Random.nextInt(creatures.size)
-        val creatureDrawable = creatures[index]
+        val creatureDrawableRes = creatures[index]
         val creatureName = creatureNames[index]
-
         val playerPos = playerMarker.position
+
         val lat = playerPos.latitude + Random.nextDouble(-0.001, 0.001)
         val lon = playerPos.longitude + Random.nextDouble(-0.001, 0.001)
 
+        val originalBitmap = BitmapFactory.decodeResource(resources, creatureDrawableRes)
+        val scaledBitmap = Bitmap.createScaledBitmap(originalBitmap, 130, 130, true)
+        originalBitmap.recycle()
+        val creatureIcon = BitmapDrawable(resources, scaledBitmap)
+
         val marker = Marker(mapView).apply {
             position = GeoPoint(lat, lon)
-            title = "A wild $creatureName appeared!"
+            title = creatureName
+            icon = creatureIcon
+            setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
         }
 
         mapView.overlays.add(marker)
+        activeCreatures.add(marker)
         mapView.invalidate()
 
         val direction = try {
@@ -243,14 +461,18 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             "nearby"
         }
 
-        Toast.makeText(this, "A wild $creatureName appeared to the $direction!", Toast.LENGTH_LONG).show()
+        Toast.makeText(
+            this,
+            "A wild $creatureName appeared to the $direction!",
+            Toast.LENGTH_LONG
+        ).show()
 
         marker.setOnMarkerClickListener { _, _ ->
             AlertDialog.Builder(this)
                 .setTitle("A wild $creatureName appeared!")
                 .setMessage("Do you want to capture it?")
                 .setPositiveButton("Capture") { _, _ ->
-                    captureCreature(creatureName, creatureDrawable)
+                    captureCreature(creatureName, creatureDrawableRes)
                     mapView.overlays.remove(marker)
                     mapView.invalidate()
                 }
@@ -279,10 +501,15 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
 
     private fun captureCreature(name: String, sprite: Int) {
         lifecycleScope.launch {
-            withContext(Dispatchers.IO) {
-                db.creatureDao().insert(Creature(name = name, sprite = sprite))
+            try {
+                withContext(Dispatchers.IO) {
+                    db.creatureDao().insert(Creature(name = name, sprite = sprite))
+                }
+                Toast.makeText(this@MainActivity, "$name captured!", Toast.LENGTH_SHORT).show()
+            } catch (e: Exception) {
+                Log.e("MainActivity", "Failed to capture creature", e)
+                Toast.makeText(this@MainActivity, "Failed to capture $name", Toast.LENGTH_SHORT).show()
             }
-            Toast.makeText(this@MainActivity, "$name captured!", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -303,9 +530,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             }
         }
     }
-
-    // 🔹 Safe cleanup before logout
-    fun cleanupOnLogout() {
+fun cleanupOnLogout() {
         isLoggedOut = true
         if (::mapView.isInitialized) {
             mapView.removeAllViews()
