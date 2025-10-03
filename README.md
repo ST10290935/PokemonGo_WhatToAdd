@@ -18,3 +18,5 @@
 ## IN THE ANDROIDMANIFEST ADD:
 - Replace the existing one with the content from AndroidManifest.xml text file
 
+## IF NEEDED:
+- add the google-services.json file
