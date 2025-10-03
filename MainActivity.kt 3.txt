@@ -425,69 +425,75 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
 
-    private fun spawnRandomCreature() {
-if (isLoggedOut || !::playerMarker.isInitialized || !::mapView.isInitialized) {
-        return // don't run if logged out or map/player not ready
+   private fun spawnRandomCreature() {
+    // Early exit if logged out or map/player not ready
+    if (isLoggedOut || !::playerMarker.isInitialized || !::mapView.isInitialized) {
+        return
     }
-        if (!::playerMarker.isInitialized) {
-            mapView.postDelayed({ spawnRandomCreature() }, 10000)
-            return
-        }
 
-        val index = Random.nextInt(creatures.size)
-        val creatureDrawableRes = creatures[index]
-        val creatureName = creatureNames[index]
-        val playerPos = playerMarker.position
+    val index = Random.nextInt(creatures.size)
+    val creatureDrawableRes = creatures[index]
+    val creatureName = creatureNames[index]
+    val playerPos = playerMarker.position
 
-        val lat = playerPos.latitude + Random.nextDouble(-0.001, 0.001)
-        val lon = playerPos.longitude + Random.nextDouble(-0.001, 0.001)
+    val lat = playerPos.latitude + Random.nextDouble(-0.001, 0.001)
+    val lon = playerPos.longitude + Random.nextDouble(-0.001, 0.001)
 
-        val originalBitmap = BitmapFactory.decodeResource(resources, creatureDrawableRes)
-        val scaledBitmap = Bitmap.createScaledBitmap(originalBitmap, 130, 130, true)
-        originalBitmap.recycle()
-        val creatureIcon = BitmapDrawable(resources, scaledBitmap)
+    val originalBitmap = BitmapFactory.decodeResource(resources, creatureDrawableRes)
+    val scaledBitmap = Bitmap.createScaledBitmap(originalBitmap, 130, 130, true)
+    originalBitmap.recycle()
+    val creatureIcon = BitmapDrawable(resources, scaledBitmap)
 
-        val marker = Marker(mapView).apply {
-            position = GeoPoint(lat, lon)
-            title = creatureName
-            icon = creatureIcon
-            setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
-        }
+    // Create marker safely
+    val marker = Marker(mapView).apply {
+        position = GeoPoint(lat, lon)
+        title = creatureName
+        icon = creatureIcon
+        setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
+    }
 
-        mapView.overlays.add(marker)
-        activeCreatures.add(marker)
-        mapView.invalidate()
+    mapView.overlays.add(marker)
+    activeCreatures.add(marker)
+    mapView.invalidate()
 
-        val direction = try {
-            val bearing = playerPos.bearingTo(marker.position)
-            bearingToDirection(bearing)
-        } catch (e: Exception) {
-            "nearby"
-        }
+    val direction = try {
+        val bearing = playerPos.bearingTo(marker.position)
+        bearingToDirection(bearing)
+    } catch (e: Exception) {
+        "nearby"
+    }
 
-        Toast.makeText(
-            this,
-            "A wild $creatureName appeared to the $direction!",
-            Toast.LENGTH_LONG
-        ).show()
+    Toast.makeText(
+        this,
+        "A wild $creatureName appeared to the $direction!",
+        Toast.LENGTH_LONG
+    ).show()
 
-        marker.setOnMarkerClickListener { _, _ ->
-            AlertDialog.Builder(this)
-                .setTitle("A wild $creatureName appeared!")
-                .setMessage("Do you want to capture it?")
-                .setPositiveButton("Capture") { _, _ ->
-                    captureCreature(creatureName, creatureDrawableRes)
+    marker.setOnMarkerClickListener { _, _ ->
+        AlertDialog.Builder(this)
+            .setTitle("A wild $creatureName appeared!")
+            .setMessage("Do you want to capture it?")
+            .setPositiveButton("Capture") { _, _ ->
+                captureCreature(creatureName, creatureDrawableRes)
+                if (::mapView.isInitialized) {
                     mapView.overlays.remove(marker)
                     mapView.invalidate()
                 }
-                .setNegativeButton("Ignore", null)
-                .show()
-            true
-        }
-
-        mapView.postDelayed({ spawnRandomCreature() }, 30000)
+            }
+            .setNegativeButton("Ignore", null)
+            .show()
+        true
     }
 
+    // Schedule next spawn only if not logged out
+    if (!isLoggedOut && ::mapView.isInitialized && ::playerMarker.isInitialized) {
+        mapView.postDelayed({
+            if (!isLoggedOut && ::mapView.isInitialized && ::playerMarker.isInitialized) {
+                spawnRandomCreature()
+            }
+        }, 30000)
+    }
+}
     private fun bearingToDirection(bearing: Double): String {
         val b = (bearing + 360) % 360
         return when {
@@ -535,15 +541,23 @@ if (isLoggedOut || !::playerMarker.isInitialized || !::mapView.isInitialized) {
         }
     }
 fun cleanupOnLogout() {
-        isLoggedOut = true
-        if (::mapView.isInitialized) {
-            mapView.handler?.removeCallbacksAndMessages(null) // cancel all pending posts
+    isLoggedOut = true
+
+    if (::mapView.isInitialized) {
+        // Cancel all delayed tasks
+        mapView.handler?.removeCallbacksAndMessages(null)
+
+        // Remove markers & overlays safely
+        activeCreatures.clear()
+        mapView.overlays.clear()
         mapView.removeAllViews()
         mapView.clearAnimation()
-        mapView.overlays.clear()
+
+        // Detach map safely
         mapView.onDetach()
-        }
     }
 }
+}
+
 
 
