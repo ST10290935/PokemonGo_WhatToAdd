@@ -519,7 +519,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         }
     }
 
-    private fun cleanupOnLogout() {
+    fun cleanupOnLogout() {
         isLoggedOut = true
 
         // Cancel all delayed tasks FIRST
