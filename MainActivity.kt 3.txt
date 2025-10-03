@@ -426,6 +426,9 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
 
     private fun spawnRandomCreature() {
+if (isLoggedOut || !::playerMarker.isInitialized || !::mapView.isInitialized) {
+        return // don't run if logged out or map/player not ready
+    }
         if (!::playerMarker.isInitialized) {
             mapView.postDelayed({ spawnRandomCreature() }, 10000)
             return
@@ -534,12 +537,13 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
 fun cleanupOnLogout() {
         isLoggedOut = true
         if (::mapView.isInitialized) {
-            mapView.removeAllViews()
-            mapView.clearAnimation()
-            mapView.overlays.clear()
-            mapView.onDetach()
-            mapView.handler?.removeCallbacksAndMessages(null)
+            mapView.handler?.removeCallbacksAndMessages(null) // cancel all pending posts
+        mapView.removeAllViews()
+        mapView.clearAnimation()
+        mapView.overlays.clear()
+        mapView.onDetach()
         }
     }
 }
+
 
