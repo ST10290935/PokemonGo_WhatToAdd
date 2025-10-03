@@ -44,6 +44,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     private lateinit var sensorManager: SensorManager
     private var stepCounterSensor: Sensor? = null
     private var steps = 0
+    private var isLoggedOut = false
     private lateinit var playerMarker: Marker
     private lateinit var prefs: SharedPreferences
     private lateinit var listener: SharedPreferences.OnSharedPreferenceChangeListener
@@ -541,3 +542,4 @@ fun cleanupOnLogout() {
         }
     }
 }
+
