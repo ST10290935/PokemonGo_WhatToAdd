@@ -1,0 +1,48 @@
+package com.example.pokemon
+
+import android.content.Intent
+import android.os.Bundle
+import androidx.preference.Preference
+import androidx.preference.PreferenceFragmentCompat
+import com.google.firebase.auth.FirebaseAuth
+import com.google.android.gms.auth.api.signin.GoogleSignIn
+import com.google.android.gms.auth.api.signin.GoogleSignInOptions
+
+class SettingsFragment : PreferenceFragmentCompat() {
+
+    override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
+        setPreferencesFromResource(R.xml.preferences, rootKey)
+
+        // Add Logout preference listener
+        val logoutPref = findPreference<Preference>("pref_logout")
+        logoutPref?.setOnPreferenceClickListener {
+            performLogout()  // shows confirmation dialog
+            true
+        }
+    }
+
+    private fun performLogout() {
+        // Show confirmation dialog
+        androidx.appcompat.app.AlertDialog.Builder(requireContext())
+            .setTitle("Logout")
+            .setMessage("Are you sure you want to logout?")
+            .setPositiveButton("Logout") { _, _ ->
+                // Cleanup MainActivity map and overlays safely if present
+                val mainActivity = activity
+                if (mainActivity is MainActivity) {
+                    mainActivity.cleanupOnLogout()
+                }
+
+                // Firebase sign out
+                FirebaseAuth.getInstance().signOut()
+
+                // Go back to LoginActivity
+                val intent = Intent(requireContext(), LoginActivity::class.java)
+                intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+                startActivity(intent)
+                activity?.finish()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+}
